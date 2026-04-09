@@ -210,17 +210,17 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 ## Step 9: Deploy Contracts to Chain
 
 **What:** Deploys contracts to the target chain and verifies them on the block explorer.
-**Type:** Deterministic (interactive — prompts for keystore password via TTY)
+**Type:** Deterministic (uses `expect` for non-interactive keystore creation)
 **Script:** `./steps/09_deploy_chain.sh <project-name>`
 
 **Two-pass flow:**
-1. **First run (no keystore):** Generates a new deployer wallet, imports into a foundry keystore (prompts for password via TTY), shows the address, exits. Fund the address before proceeding.
-2. **Second run (funded keystore):** Deploys contracts (prompts for keystore password via TTY), generates ABIs, verifies on block explorer.
+1. **First run (no keystore):** Generates a random password, creates a deployer keystore via `yarn generate` (driven by `expect`), saves `DEPLOYER_PASSWORD` and `DEPLOYER_KEYSTORE` to `.env`, shows the address to fund, exits.
+2. **Second run (funded keystore):** Pipes password from `.env` to `yarn deploy` for non-interactive deployment, generates ABIs, verifies on block explorer.
 
 **Inputs:**
 - `<project-name>` — project directory name
 - Reads `params.json` for chain
-- Keystore password entered via TTY (never stored in files or env vars)
+- `DEPLOYER_PASSWORD` and `DEPLOYER_KEYSTORE` in `.env` (auto-generated on first run)
 
 **Outputs:**
 - Deployed contract addresses

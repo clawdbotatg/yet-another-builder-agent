@@ -68,6 +68,9 @@ if [[ ! -f "$HOME/.foundry/keystores/$KEYSTORE_NAME" ]]; then
   DEPLOYER_ADDR=$(echo "$GENERATE_OUTPUT" | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
 
   # Save password and keystore name to .env
+  # Ensure .env ends with a newline before appending (prevents concatenation with last line)
+  [[ -f "$ROOT_DIR/.env" && -s "$ROOT_DIR/.env" ]] && sed -i.bak -e '$a\' "$ROOT_DIR/.env" && rm -f "$ROOT_DIR/.env.bak"
+
   if grep -q "^DEPLOYER_PASSWORD=" "$ROOT_DIR/.env" 2>/dev/null; then
     sed -i.bak "s|^DEPLOYER_PASSWORD=.*|DEPLOYER_PASSWORD=$DEPLOYER_PASSWORD|" "$ROOT_DIR/.env"
     rm -f "$ROOT_DIR/.env.bak"
@@ -123,11 +126,11 @@ esac
 # ─── Deploy via yarn deploy (SE2's full flow) ───────────────────────────────
 # yarn deploy --network <chain> --keystore <name> goes through:
 #   parseArgs.js → make deploy-and-generate-abis → forge script + generateTsAbis.js
-# Pipe password so forge reads it from stdin when it prompts.
+# Pass KEYSTORE_PASSWORD env var so the Makefile can use --password flag.
 echo ""
 echo "  Deploying to $CHAIN via yarn deploy..."
 
-echo "$DEPLOYER_PASSWORD" | yarn deploy --network "$CHAIN" --keystore "$KEYSTORE_NAME"
+KEYSTORE_PASSWORD="$DEPLOYER_PASSWORD" yarn deploy --network "$CHAIN" --keystore "$KEYSTORE_NAME"
 DEPLOY_EXIT=$?
 
 if [[ $DEPLOY_EXIT -ne 0 ]]; then
