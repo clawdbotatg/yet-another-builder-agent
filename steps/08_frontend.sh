@@ -74,6 +74,21 @@ $(cat "$SOL_FILE")
 "
 done
 
+# Gather all contract errors (including inherited from dependencies like SafeERC20)
+# This gives the LLM the full error map to build human-readable messages
+CONTRACT_ERRORS=""
+for SOL_FILE in "$PROJECT_DIR/packages/foundry/contracts"/*.sol; do
+  [[ -f "$SOL_FILE" ]] || continue
+  CONTRACT_NAME=$(basename "$SOL_FILE" .sol)
+  ERRORS=$(cd "$PROJECT_DIR/packages/foundry" && forge inspect "$CONTRACT_NAME" errors 2>/dev/null || true)
+  if [[ -n "$ERRORS" ]]; then
+    CONTRACT_ERRORS="$CONTRACT_ERRORS
+--- $CONTRACT_NAME errors (including inherited from dependencies) ---
+$ERRORS
+"
+  fi
+done
+
 # Read existing files the LLM needs to understand
 EXISTING_HEADER=$(cat "$NEXTJS_DIR/components/Header.tsx")
 EXISTING_FOOTER=$(cat "$NEXTJS_DIR/components/Footer.tsx")
@@ -147,7 +162,53 @@ CRITICAL RULES:
 - Use the Address component from @scaffold-ui/components for displaying addresses
 - Keep all existing imports from the SE2 scaffold that are needed (RainbowKit, ThemeProvider, etc.)
 - Do NOT modify ScaffoldEthAppWithProviders.tsx or any scaffold-eth/ internal components
-- Approve exact amounts or 3-5x, NEVER infinite approvals'
+- Approve exact amounts or 3-5x, NEVER infinite approvals
+
+ERROR HANDLING (MANDATORY — every writeContractAsync call):
+Every catch block that handles a contract write error MUST show a human-readable message to the user. Never console.error silently. Never show raw hex selectors.
+
+Pattern:
+```typescript
+import { getParsedError } from "~~/utils/scaffold-eth";
+import { notification } from "~~/utils/scaffold-eth";
+
+// Map contract error names to plain English.
+// getParsedError() returns a STRING like:
+//   "Execution reverted with the following reason:\nSafeERC20FailedOperation(0x...)"
+// So we match by checking if the string CONTAINS the error name.
+// See CONTRACT ERRORS section below for the full list from forge inspect.
+const ERROR_MESSAGES: [string, string][] = [
+  // [substring to match in getParsedError output, human-readable message]
+  // Map EVERY error from the CONTRACT ERRORS section
+];
+
+function getHumanError(e: unknown): string {
+  const parsed = getParsedError(e);
+  for (const [pattern, message] of ERROR_MESSAGES) {
+    if (parsed.includes(pattern)) return message;
+  }
+  // Catch-all for unknown errors — NEVER show raw hex or "Encoded error signature"
+  if (parsed.includes("Encoded error signature") || parsed.includes("0x")) {
+    return "Transaction failed. Please try again.";
+  }
+  // If getParsedError returned something readable (like "User rejected"), show it
+  return parsed;
+}
+
+// In every catch block:
+try {
+  await writeContractAsync({ functionName: "...", args: [...] });
+} catch (e) {
+  notification.error(getHumanError(e));
+}
+```
+
+The CONTRACT ERRORS section below lists ALL errors from forge inspect (including inherited from libraries like OpenZeppelin SafeERC20). You MUST map every one. Examples:
+- SafeERC20FailedOperation → "Token transfer failed — check your balance and approval"
+- EmptyMessage / EmptyText → "Message cannot be empty"
+- MessageTooLong / TextTooLong → "Message exceeds the maximum length"
+- User rejected / denied → let the raw parsed message through (it is already readable)
+- Any unknown hex selector → "Transaction failed. Please try again."'
 
 USER_PROMPT="## Build Plan & Design Brief
 $JOB_CONTENT
@@ -160,6 +221,9 @@ $EXTERNAL_INFO
 
 ## External Contracts TypeScript (already configured)
 $EXTERNAL_CONTRACTS
+
+## Contract Errors (map ALL of these to human-readable messages)
+$CONTRACT_ERRORS
 
 ## Chain: $CHAIN (ID: $CHAIN_ID)
 

@@ -231,6 +231,47 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 
 ---
 
+## Step 9b: QA Audit
+
+**What:** Automated QA audit of the frontend following the dApp QA Pre-Ship Audit skill. Checks wallet flow, SE2 branding removal, button states, dark mode, mobile deep linking, contract verification, and more. Auto-fixes failures via LLM.
+**Type:** Code analysis + LLM (for auto-fix loop)
+**Script:** `./steps/09b_qa_audit.sh <model> <project-name> [max-retries]`
+
+**Inputs:**
+- `<model>` — LLM model ID (used for fix attempts)
+- `<project-name>` — project directory name
+- `[max-retries]` — number of fix attempts (default: 3)
+
+**Outputs:**
+- Fixed frontend files (if corrections were needed)
+- PASS/FAIL report for each QA item
+
+**Checks (ship-blocking):**
+- Wallet connection shows a BUTTON, not text
+- Uses `useScaffoldWriteContract` (not raw wagmi)
+- Approve button disabled during pending
+- SE2 footer/tab-title branding removed
+- Contracts verified on block explorer
+
+**Checks (important):**
+- Contract address displayed with `<Address/>`
+- Address inputs use `<AddressInput/>`
+- OG image is absolute URL
+- pollingInterval is 3000
+- No pill-shaped inputs (`--radius-field`)
+- No hardcoded dark backgrounds
+- Button loaders use inline spinner
+- Phantom wallet in RainbowKit
+- SE2 README replaced
+- Mobile deep linking
+- Approve cooldown (prevents button flicker)
+
+**Success check:** Zero critical failures. Exit code 0.
+
+**Reference:** https://ethskills.com/qa/SKILL.md
+
+---
+
 ## Step 10: Build and Ship to IPFS
 
 **What:** Builds the Next.js frontend for static export and uploads to IPFS via bgipfs.
@@ -302,6 +343,9 @@ Step 8: Build Frontend ──► UI components ──► verify_fix_loop(next:bu
 Step 9: Deploy to Chain ──► live contracts + verified source
   │
   ▼
+Step 9b: QA Audit ──► PASS/FAIL report ──► auto-fix loop
+  │
+  ▼
 Step 10: Ship to IPFS ──► live URL + deployment.json
   │
   ▼
@@ -325,6 +369,7 @@ PROJECT=$(jq -r .project_name builds/*/params.json | head -1)
 ./steps/07_compile_test.sh $MODEL $PROJECT
 ./steps/08_frontend.sh $MODEL $PROJECT
 ./steps/09_deploy_chain.sh $PROJECT
+./steps/09b_qa_audit.sh $MODEL $PROJECT
 ./steps/10_ipfs_ship.sh $PROJECT
 ```
 
