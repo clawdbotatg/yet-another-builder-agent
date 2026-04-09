@@ -37,26 +37,11 @@ if [[ -z "${BGIPFS_API_KEY:-}" ]]; then
   exit 1
 fi
 
-# Check bgipfs is installed
-if ! command -v bgipfs &> /dev/null; then
-  echo "  Installing bgipfs..."
-  npm install -g bgipfs 2>&1 | tail -3
+# Check for cid-tool (CIDv0 → CIDv1 conversion)
+if ! command -v npx &> /dev/null; then
+  echo "ERROR: npx not found. Install Node.js."
+  exit 1
 fi
-
-# ─── Configure bgipfs credentials ───────────────────────────────────────────
-BGIPFS_CONFIG_DIR="$HOME/.bgipfs"
-BGIPFS_CREDS="$BGIPFS_CONFIG_DIR/credentials.json"
-
-mkdir -p "$BGIPFS_CONFIG_DIR"
-cat > "$BGIPFS_CREDS" << EOF
-{
-  "url": "https://upload.bgipfs.com",
-  "headers": {
-    "X-API-Key": "$BGIPFS_API_KEY"
-  }
-}
-EOF
-echo "  ✓ bgipfs credentials configured"
 
 # ─── Create polyfill for Node 25+ localStorage issue ────────────────────────
 POLYFILL_FILE="$NEXTJS_DIR/polyfill-localstorage.cjs"
@@ -100,21 +85,41 @@ echo "  ✓ Build succeeded ($FILE_COUNT files in out/)"
 
 # ─── Upload to IPFS ─────────────────────────────────────────────────────────
 echo ""
-echo "  Uploading to IPFS via bgipfs..."
-UPLOAD_OUTPUT=$(bgipfs upload "$NEXTJS_DIR/out" --config "$BGIPFS_CREDS" 2>&1)
+echo "  Uploading to IPFS via bgipfs API..."
 
-# Extract CID from output
-CID=$(echo "$UPLOAD_OUTPUT" | grep -oE 'bafy[a-zA-Z0-9]+' | head -1)
+# Build curl command with all files from out/
+cd "$NEXTJS_DIR/out"
+CURL_ARGS=(-s -X POST "https://upload.bgipfs.com/api/v0/add?wrap-with-directory=true&pin=true" -H "X-API-Key: $BGIPFS_API_KEY")
 
-if [[ -z "$CID" ]]; then
-  echo "  ✗ Upload failed — no CID returned"
-  echo "$UPLOAD_OUTPUT"
+FILE_UPLOAD_COUNT=0
+while IFS= read -r -d '' f; do
+  REL_PATH="${f#./}"
+  CURL_ARGS+=(-F "file=@$f;filename=$REL_PATH")
+  FILE_UPLOAD_COUNT=$((FILE_UPLOAD_COUNT + 1))
+done < <(find . -type f -print0 | sort -z)
+
+echo "  Uploading $FILE_UPLOAD_COUNT files..."
+UPLOAD_OUTPUT=$(curl "${CURL_ARGS[@]}" 2>&1)
+
+# The root directory hash is the last line (empty Name field)
+ROOT_HASH=$(echo "$UPLOAD_OUTPUT" | tail -1 | jq -r '.Hash // empty' 2>/dev/null)
+
+if [[ -z "$ROOT_HASH" ]]; then
+  echo "  ✗ Upload failed — no root hash returned"
+  echo "$UPLOAD_OUTPUT" | tail -5
   exit 1
+fi
+
+echo "  ✓ Uploaded to IPFS (CIDv0: $ROOT_HASH)"
+
+# Convert CIDv0 (Qm...) to CIDv1 (bafy...) for subdomain gateway
+CID=$(npx -y cid-tool base32 "$ROOT_HASH" 2>/dev/null)
+if [[ -z "$CID" ]]; then
+  CID="$ROOT_HASH"
 fi
 
 IPFS_URL="https://${CID}.ipfs.community.bgipfs.com/"
 
-echo "  ✓ Uploaded to IPFS"
 echo ""
 echo "  CID:  $CID"
 echo "  URL:  $IPFS_URL"

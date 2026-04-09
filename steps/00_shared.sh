@@ -27,45 +27,80 @@ llm_call() {
     return 1
   fi
 
-  local payload
-  payload=$(jq -n \
+  # Use temp files for large prompts to avoid shell arg-size limits and encoding issues
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
+  printf '%s' "$system_prompt" > "$tmpdir/system.txt"
+  printf '%s' "$user_prompt" > "$tmpdir/user.txt"
+
+  jq -n \
     --arg model "$model" \
-    --arg system "$system_prompt" \
-    --arg user "$user_prompt" \
+    --rawfile system "$tmpdir/system.txt" \
+    --rawfile user "$tmpdir/user.txt" \
     --argjson max_tokens "$max_tokens" \
     '{
       model: $model,
       max_tokens: $max_tokens,
+      stream: true,
       messages: [
         { role: "system", content: $system },
         { role: "user", content: $user }
       ],
       temperature: 0
-    }')
+    }' > "$tmpdir/payload.json" 2>&1
 
-  local raw
-  raw=$(curl -s "$BANKR_URL" \
-    -H "Content-Type: application/json" \
-    -H "X-API-Key: $BANKR_API_KEY" \
-    -d "$payload")
-
-  # Check for API errors
-  local error
-  error=$(echo "$raw" | jq -r '.error.message // empty' 2>/dev/null)
-  if [[ -n "$error" ]]; then
-    echo "ERROR: API returned: $error" >&2
+  if [[ ! -s "$tmpdir/payload.json" ]]; then
+    echo "ERROR: Failed to create payload JSON" >&2
+    rm -rf "$tmpdir"
     return 1
   fi
 
-  # Extract content, strip <think>...</think> tags some models emit (multiline)
+  # Stream the response — keeps connection alive, avoids gateway timeouts
+  curl -s --max-time 600 "$BANKR_URL" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $BANKR_API_KEY" \
+    -d @"$tmpdir/payload.json" \
+    > "$tmpdir/stream.raw" 2>&1
+
+  # Check for non-SSE error responses (HTML errors, etc.)
+  if head -1 "$tmpdir/stream.raw" | grep -q '<html\|^{' 2>/dev/null; then
+    local first_line
+    first_line=$(head -1 "$tmpdir/stream.raw")
+    # Could be a single JSON error object (non-streamed)
+    local api_error
+    api_error=$(printf '%s' "$first_line" | jq -r '.error.message // empty' 2>/dev/null)
+    if [[ -n "$api_error" ]]; then
+      echo "ERROR: API returned: $api_error" >&2
+    else
+      echo "ERROR: API returned invalid response: ${first_line:0:200}" >&2
+    fi
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  # Extract content from SSE stream: data: {"choices":[{"delta":{"content":"..."}}]}
+  # Filter data: lines, skip [DONE], extract delta.content, concatenate
   local content
-  content=$(echo "$raw" | jq -r '.choices[0].message.content // empty')
-  content=$(echo "$content" | perl -0777 -pe 's/<think>.*?<\/think>\s*//gs')
+  content=$(grep '^data: ' "$tmpdir/stream.raw" \
+    | grep -v '^data: \[DONE\]' \
+    | sed 's/^data: //' \
+    | jq -j '.choices[0].delta.content // empty' 2>/dev/null)
+
+  rm -rf "$tmpdir"
+
+  if [[ -z "$content" ]]; then
+    echo "ERROR: No content extracted from stream" >&2
+    return 1
+  fi
+
+  # Strip <think>...</think> tags some models emit (multiline)
+  content=$(printf '%s' "$content" | perl -0777 -pe 's/<think>.*?<\/think>\s*//gs')
 
   # Strip markdown code fencing (```json ... ``` or ```solidity ... ```)
-  content=$(echo "$content" | perl -0777 -pe 's/^```\w*\n//; s/\n```\s*$//s')
+  content=$(printf '%s' "$content" | perl -0777 -pe 's/^```\w*\n//; s/\n```\s*$//s')
 
-  echo "$content"
+  printf '%s' "$content"
 }
 
 # require_param <param_name> <value>
@@ -123,12 +158,12 @@ verify_fix_loop() {
       echo "  --- Fix attempt $((attempt - 1)) of $max_retries ---"
     fi
 
-    # Run verify command
-    local output
-    output=$(cd "$work_dir" && eval "$verify_cmd" 2>&1) || true
+    # Run verify command — capture exit code
+    local output exit_code
+    output=$(cd "$work_dir" && eval "$verify_cmd" 2>&1) && exit_code=0 || exit_code=$?
 
-    # Check for errors (non-zero exit or error keywords)
-    if echo "$output" | grep -qiE "^Error|error:|failed|FAIL"; then
+    # Check for failure via exit code
+    if [[ $exit_code -ne 0 ]]; then
       local pass_count fail_count
       pass_count=$(echo "$output" | grep -oE '[0-9]+ (tests )?passed' | tail -1 | grep -oE '[0-9]+' || echo "")
       fail_count=$(echo "$output" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo "")
@@ -158,9 +193,10 @@ $(cat "$f")
         done
       done
 
-      # Filter errors to just the key lines (not verbose candidates/notes)
+      # Filter errors — include file:line references, Error lines, and FAIL lines
+      # Also grab lines around errors for context (TypeScript errors span multiple lines)
       local filtered_errors
-      filtered_errors=$(echo "$output" | grep -E "Error|error:|FAIL|failed" | head -30)
+      filtered_errors=$(echo "$output" | grep -E "Error|error|FAIL|failed|\.tsx|\.ts|\.sol|-->|Type error" | grep -v "^note\[" | head -40)
 
       echo "  Asking LLM to fix..."
 

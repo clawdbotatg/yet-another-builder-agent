@@ -4,7 +4,7 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 
 ## Prerequisites
 
-- `.env` file with: `BANKR_API_KEY`, `BGIPFS_API_KEY`, `BASE_RPC_URL`
+- `.env` file with: `BANKR_API_KEY`, `BGIPFS_API_KEY`, `BASE_RPC_URL`, `ETH_PRIVATE_KEY`
 - Node.js, yarn, foundry (forge/anvil), jq, curl, perl installed
 - A `job.md` file describing the dApp to build
 
@@ -210,20 +210,24 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 ## Step 9: Deploy Contracts to Chain
 
 **What:** Deploys contracts to the target chain and verifies them on the block explorer.
-**Type:** Deterministic
+**Type:** Deterministic (interactive — prompts for keystore password via TTY)
 **Script:** `./steps/09_deploy_chain.sh <project-name>`
+
+**Two-pass flow:**
+1. **First run (no keystore):** Generates a new deployer wallet, imports into a foundry keystore (prompts for password via TTY), shows the address, exits. Fund the address before proceeding.
+2. **Second run (funded keystore):** Deploys contracts (prompts for keystore password via TTY), generates ABIs, verifies on block explorer.
 
 **Inputs:**
 - `<project-name>` — project directory name
-- Requires funded deployer wallet (`yarn generate` + fund)
 - Reads `params.json` for chain
+- Keystore password entered via TTY (never stored in files or env vars)
 
 **Outputs:**
 - Deployed contract addresses
 - Verified source on block explorer
-- Updated `deployedContracts.ts`
+- Updated `deployedContracts.ts` (via SE2's `generateTsAbis.js`)
 
-**Success check:** `yarn verify --network <chain>` succeeds.
+**Success check:** `deployedContracts.ts` contains the chain ID. Contracts verified on block explorer.
 
 ---
 

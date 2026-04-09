@@ -53,10 +53,14 @@ case "$CHAIN" in
   *)          CHAIN_IMPORT="$CHAIN" ;;
 esac
 
-# Replace the targetNetworks line
-sed -i.bak "s/chains\.foundry/chains.$CHAIN_IMPORT/" "$NEXTJS_DIR/scaffold.config.ts"
-rm -f "$NEXTJS_DIR/scaffold.config.ts.bak"
-echo "  ✓ Set targetNetworks to chains.$CHAIN_IMPORT"
+# Replace the targetNetworks line (idempotent — only if still on foundry)
+if grep -q "chains\.foundry" "$NEXTJS_DIR/scaffold.config.ts"; then
+  sed -i.bak "s/chains\.foundry/chains.$CHAIN_IMPORT/" "$NEXTJS_DIR/scaffold.config.ts"
+  rm -f "$NEXTJS_DIR/scaffold.config.ts.bak"
+  echo "  ✓ Set targetNetworks to chains.$CHAIN_IMPORT"
+else
+  echo "  ✓ targetNetworks already set (skipped)"
+fi
 
 # ─── Step 8b: Gather context for LLM ────────────────────────────────────────
 
