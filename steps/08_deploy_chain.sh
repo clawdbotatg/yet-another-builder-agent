@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Step 9: Deploy Contracts to Chain ──────────────────────────────────────
+# ─── Step 8: Deploy Contracts to Chain ──────────────────────────────────────
 #
-# Usage: ./steps/09_deploy_chain.sh <project-name>
+# Usage: ./steps/08_deploy_chain.sh <project-name>
 #
 # Deploys contracts using SE2's yarn deploy flow with foundry keystores.
+# Must run BEFORE Step 9 (frontend) so deployedContracts.ts exists when
+# the LLM generates frontend code.
 #
 # First run (no keystore):  Uses yarn generate (via expect) to create a
 #                           deployer keystore. Saves password + keystore name
@@ -21,7 +23,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/00_shared.sh"
 
-PROJECT="${1:?Usage: ./steps/09_deploy_chain.sh <project-name>}"
+PROJECT="${1:?Usage: ./steps/08_deploy_chain.sh <project-name>}"
 
 load_params "$PROJECT"
 
@@ -93,7 +95,7 @@ if [[ ! -f "$HOME/.foundry/keystores/$KEYSTORE_NAME" ]]; then
   printf "  ║  %-60s║\n" "$DEPLOYER_ADDR"
   echo "  ╚══════════════════════════════════════════════════════════════╝"
   echo ""
-  echo "  After funding, re-run: ./steps/09_deploy_chain.sh $PROJECT"
+  echo "  After funding, re-run: ./steps/08_deploy_chain.sh $PROJECT"
   exit 0
 fi
 
@@ -122,6 +124,20 @@ case "$CHAIN" in
     fi
     ;;
 esac
+
+# ─── Patch Makefile for non-localhost keystore deploy ────────────────────────
+# SE2's default Makefile doesn't pass --account or --password for non-localhost
+# deploys, so forge can't find the keystore. Patch the deploy target to include
+# --account $(ETH_KEYSTORE_ACCOUNT) and optionally --password $(KEYSTORE_PASSWORD).
+MAKEFILE="$FOUNDRY_DIR/Makefile"
+if ! grep -q "KEYSTORE_PASSWORD" "$MAKEFILE" 2>/dev/null; then
+  # Replace the non-localhost else branch to include account + optional password
+  sed -i.bak 's|else \t\tforge script $(DEPLOY_SCRIPT) --rpc-url $(RPC_URL) --broadcast --ffi; \tfi|elif [ -n "$(KEYSTORE_PASSWORD)" ]; then \t\tforge script $(DEPLOY_SCRIPT) --rpc-url $(RPC_URL) --account $(ETH_KEYSTORE_ACCOUNT) --password "$(KEYSTORE_PASSWORD)" --broadcast --ffi; \telse \t\tforge script $(DEPLOY_SCRIPT) --rpc-url $(RPC_URL) --account $(ETH_KEYSTORE_ACCOUNT) --broadcast --ffi; \tfi|' "$MAKEFILE"
+  rm -f "$MAKEFILE.bak"
+  echo "  ✓ Patched Makefile for keystore deploy"
+else
+  echo "  ✓ Makefile already patched"
+fi
 
 # ─── Deploy via yarn deploy (SE2's full flow) ───────────────────────────────
 # yarn deploy --network <chain> --keystore <name> goes through:

@@ -186,32 +186,11 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 
 ---
 
-## Step 8: Build Frontend
+## Step 8: Deploy Contracts to Chain
 
-**What:** Sends the job spec, design brief, contract ABIs, and SE2 conventions to an LLM to create/modify frontend components and pages.
-**Type:** LLM call (largest step — multiple files)
-**Script:** `./steps/08_frontend.sh <model> <project-name>`
-
-**Inputs:**
-- `<model>` — LLM model ID
-- `<project-name>` — project directory name
-- Reads: job.md (design brief), deployed contract ABIs, SE2 AGENTS.md conventions
-
-**Outputs:**
-- Modified/new files in `packages/nextjs/app/`
-- Modified/new files in `packages/nextjs/components/`
-- Updated `tailwind.config.ts` (custom theme)
-- Updated `scaffold.config.ts` (target network)
-
-**Success check:** `yarn next:build` completes without errors.
-
----
-
-## Step 9: Deploy Contracts to Chain
-
-**What:** Deploys contracts to the target chain and verifies them on the block explorer.
+**What:** Deploys contracts to the target chain and verifies them on the block explorer. Must run BEFORE Step 9 (frontend) so `deployedContracts.ts` exists when the LLM generates frontend code.
 **Type:** Deterministic (uses `expect` for non-interactive keystore creation)
-**Script:** `./steps/09_deploy_chain.sh <project-name>`
+**Script:** `./steps/08_deploy_chain.sh <project-name>`
 
 **Two-pass flow:**
 1. **First run (no keystore):** Generates a random password, creates a deployer keystore via `yarn generate` (driven by `expect`), saves `DEPLOYER_PASSWORD` and `DEPLOYER_KEYSTORE` to `.env`, shows the address to fund, exits.
@@ -228,6 +207,27 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 - Updated `deployedContracts.ts` (via SE2's `generateTsAbis.js`)
 
 **Success check:** `deployedContracts.ts` contains the chain ID. Contracts verified on block explorer.
+
+---
+
+## Step 9: Build Frontend
+
+**What:** Sends the job spec, design brief, contract ABIs, `deployedContracts.ts` (real deployed addresses), and SE2 conventions to an LLM to create/modify frontend components and pages. Runs after deploy so the LLM has actual addresses and cannot generate placeholder literals.
+**Type:** LLM call (largest step — multiple files)
+**Script:** `./steps/09_frontend.sh <model> <project-name>`
+
+**Inputs:**
+- `<model>` — LLM model ID
+- `<project-name>` — project directory name
+- Reads: job.md (design brief), deployed contract ABIs, `deployedContracts.ts`, `externalContracts.ts`, SE2 AGENTS.md conventions
+
+**Outputs:**
+- Modified/new files in `packages/nextjs/app/`
+- Modified/new files in `packages/nextjs/components/`
+- Updated `styles/globals.css` (custom theme)
+- Updated `scaffold.config.ts` (target network)
+
+**Success check:** `yarn next:build` completes without errors.
 
 ---
 
@@ -253,6 +253,10 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 - SE2 footer/tab-title branding removed
 - Contracts verified on block explorer
 
+**Checks (ship-blocking, new):**
+- No zero-address (`0x0000...`) placeholder in frontend code
+- No deployed contract addresses hardcoded as literals in components (must use `useDeployedContractInfo`)
+
 **Checks (important):**
 - Contract address displayed with `<Address/>`
 - Address inputs use `<AddressInput/>`
@@ -269,6 +273,35 @@ You are an orchestrator. Follow these steps IN ORDER to build and ship a dApp fr
 **Success check:** Zero critical failures. Exit code 0.
 
 **Reference:** https://ethskills.com/qa/SKILL.md
+
+---
+
+## Step 9c: Carlos Semantic Review
+
+**What:** LLM semantic review of the generated frontend and contract code by "grumpy-carlos" — a senior SE-2 code reviewer persona. Unlike 09b (bash pattern checks), Carlos reasons about the code against the spec, catches semantic issues no grep can find, and returns fixes in the same call.
+
+**Catches things 09b cannot:**
+- Address passed as prop from page.tsx instead of using `useDeployedContractInfo` internally
+- Components imported but never rendered (dead code)
+- Catch blocks that call `notification.error` but never map contract error names to English
+- Components doing too many things / wrong abstractions
+- Frontend behaviour that contradicts the job spec
+
+**Type:** LLM call (review + fix in one pass)
+**Script:** `./steps/09c_carlos_review.sh <model> <project-name> [max-retries]`
+
+**Inputs:**
+- `<model>` — LLM model ID
+- `<project-name>` — project directory name
+- `[max-retries]` — re-review attempts after applying fixes (default: 2)
+- Reads: all frontend source files, contract sources, job.md, deployedContracts.ts
+
+**Outputs:**
+- Carlos review JSON: verdict, critical issues, improvements, fixed file contents
+- Fixed files written back if issues found
+- Exit code 1 if CRITICAL issues remain after max retries
+
+**Success check:** Exit code 0. Zero unresolved critical issues.
 
 ---
 
@@ -308,7 +341,7 @@ This is defined in `steps/00_shared.sh` and used by steps 3, 4, 5, 7, and 8.
 | 4 | `forge build --skip test` |
 | 5 | `yarn next:build` |
 | 7 | `forge build` then `forge test -vv` |
-| 8 | `yarn next:build` |
+| 9 | `yarn next:build` |
 
 ## Orchestration Flow
 
@@ -337,13 +370,18 @@ Step 6: Write Tests ──► test files
 Step 7: Compile & Test ──► verify_fix_loop(forge build) then verify_fix_loop(forge test)
   │
   ▼
-Step 8: Build Frontend ──► UI components ──► verify_fix_loop(next:build)
+Step 8: Deploy to Chain ──► live contracts + verified source + deployedContracts.ts
   │
   ▼
-Step 9: Deploy to Chain ──► live contracts + verified source
+Step 9: Build Frontend ──► UI components ──► verify_fix_loop(next:build)
+             (LLM receives deployedContracts.ts — no placeholder addresses possible)
   │
   ▼
-Step 9b: QA Audit ──► PASS/FAIL report ──► auto-fix loop
+Step 9b: QA Audit ──► PASS/FAIL report ──► auto-fix loop (pattern checks)
+  │
+  ▼
+Step 9c: Carlos Review ──► semantic review ──► fix + re-review loop
+             (catches what grep cannot: wrong abstractions, spec drift, subtle bugs)
   │
   ▼
 Step 10: Ship to IPFS ──► live URL + deployment.json
@@ -367,9 +405,10 @@ PROJECT=$(jq -r .project_name builds/*/params.json | head -1)
 ./steps/05_external_contracts.sh $MODEL $PROJECT
 ./steps/06_write_tests.sh $MODEL $PROJECT
 ./steps/07_compile_test.sh $MODEL $PROJECT
-./steps/08_frontend.sh $MODEL $PROJECT
-./steps/09_deploy_chain.sh $PROJECT
+./steps/08_deploy_chain.sh $PROJECT
+./steps/09_frontend.sh $MODEL $PROJECT
 ./steps/09b_qa_audit.sh $MODEL $PROJECT
+./steps/09c_carlos_review.sh $MODEL $PROJECT
 ./steps/10_ipfs_ship.sh $PROJECT
 ```
 
@@ -377,5 +416,5 @@ You can use different models per step:
 ```bash
 ./steps/01_parse_job.sh minimax-m2.7                          # cheap for JSON
 ./steps/03_write_contracts.sh claude-opus-4-6 $PROJECT        # smart for Solidity
-./steps/08_frontend.sh claude-sonnet-4-6 $PROJECT             # mid-range for frontend
+./steps/09_frontend.sh claude-sonnet-4-6 $PROJECT             # mid-range for frontend
 ```

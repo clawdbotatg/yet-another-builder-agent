@@ -40,7 +40,7 @@ echo ""
 # Every line item from the QA skill summary (ethskills.com/qa/SKILL.md).
 # The script MUST run exactly this many checks. If EXPECTED != actual,
 # something was skipped.
-EXPECTED_CHECKS=19
+EXPECTED_CHECKS=21
 # Ship-blocking:
 #  1. Wallet connection shows a BUTTON, not text
 #  2. Wrong network shows a Switch button (covered by RainbowKitCustomConnectButton)
@@ -399,6 +399,40 @@ run_qa_checks() {
     check "IMPORTANT" "Error messages human-readable (not raw hex)" "PASS"
   fi
 
+  # 20. CRITICAL: No zero-address placeholder in frontend code
+  # 0x000...0 in components/app means a placeholder was never replaced with the real address.
+  ZERO_ADDR=$(grep -rn "0x0000000000000000000000000000000000000000" "$APP_DIR" "$COMP_DIR" 2>/dev/null \
+    | grep -v "node_modules" \
+    | grep -v "BURN_ADDRESS\|burnAddress\|deadAddr\|zeroAddress\|ZeroAddress\|address(0)" \
+    | grep -v "//.*0x000\|#.*0x000" \
+    || true)
+  if [[ -n "$ZERO_ADDR" ]]; then
+    check "CRITICAL" "No zero-address placeholder in frontend" "FAIL" "Found: $(echo "$ZERO_ADDR" | head -3)"
+  else
+    check "CRITICAL" "No zero-address placeholder in frontend" "PASS"
+  fi
+
+  # 21. CRITICAL: Deployed contract addresses not hardcoded as literals in components
+  # Addresses should come from useDeployedContractInfo — never from string literals in component files.
+  DEPLOYED_ADDRS=$(grep -oE '"0x[0-9a-fA-F]{40}"' "$CONTRACTS_DIR/deployedContracts.ts" 2>/dev/null \
+    | tr -d '"' | sort -u || true)
+  ADDR_HARDCODE_FAIL=false
+  ADDR_HARDCODE_DETAIL=""
+  for addr in $DEPLOYED_ADDRS; do
+    ADDR_IN_COMPONENTS=$(grep -rn "$addr" "$APP_DIR" "$COMP_DIR" 2>/dev/null \
+      | grep -v "node_modules" | grep -v "import" || true)
+    if [[ -n "$ADDR_IN_COMPONENTS" ]]; then
+      ADDR_HARDCODE_FAIL=true
+      ADDR_HARDCODE_DETAIL="$addr hardcoded in: $(echo "$ADDR_IN_COMPONENTS" | head -2)"
+      break
+    fi
+  done
+  if $ADDR_HARDCODE_FAIL; then
+    check "CRITICAL" "Deployed addresses not hardcoded in components" "FAIL" "$ADDR_HARDCODE_DETAIL"
+  else
+    check "CRITICAL" "Deployed addresses not hardcoded in components" "PASS"
+  fi
+
   # ─── Count guard ──────────────────────────────────────────────────────────
   if [[ $CHECK_COUNT -ne $EXPECTED_CHECKS ]]; then
     echo ""
@@ -466,6 +500,8 @@ IMPORTANT FIXES:
 - Approve cooldown: after approve tx resolves, set a 4s cooldown to prevent button flicker while allowance re-fetches
 - Mobile deep linking: add writeAndOpen helper that fires TX then deep links to wallet after 2s delay. Check connector for wallet type. Skip if window.ethereum exists (in-app browser).
 - Error messages: EVERY catch block that handles a contract write error must: (1) import getParsedError from ~~/utils/scaffold-eth, (2) import notification from ~~/utils/scaffold-eth, (3) call getParsedError(e) to parse the error, (4) call notification.error() with a human-readable message. Map known contract errors to plain English (e.g. "EmptyMessage" → "Message cannot be empty", "MessageTooLong" → "Message exceeds 280 bytes", "SafeERC20FailedOperation" → "Token transfer failed — check your CLAWD balance and approval"). Never show raw hex selectors or "Encoded error signature not found" to users.
+- Zero-address placeholder: remove ALL occurrences of "0x0000000000000000000000000000000000000000" as a value in components/pages. Replace with useDeployedContractInfo("ContractName") to get the real address.
+- Hardcoded deployed address: remove all deployed contract address literals from component/page files. Use useDeployedContractInfo("ContractName") inside the component that needs the address. Never pass an address as a prop from page.tsx — let the component resolve it from the registry.
 
 IMPORTANT OUTPUT FORMAT:
 Return a JSON object where each key is a file path (relative to the project root, e.g. "packages/nextjs/app/page.tsx") and each value is the COMPLETE fixed file content. Only include files you changed. Return ONLY the JSON. No markdown. No explanation.
